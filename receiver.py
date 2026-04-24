@@ -19,6 +19,13 @@ class MulticastReceiver:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except OSError:
             pass
+        
+        # Tune receive buffer size for high-throughput multicast
+        buf_size = 8 * 1024 * 1024  # 8MB receive buffer
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buf_size)
+        actual_buf_size = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        logging.debug('Socket receive buffer: requested=%d, actual=%d', buf_size, actual_buf_size)
+        
         sock.bind((self.interface, self.port))
         mreq = struct.pack('4s4s', socket.inet_aton(self.group), socket.inet_aton(self.interface))
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
