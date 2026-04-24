@@ -1,0 +1,3 @@
+# External ASTERIX decoder dependency.
+# Install from your coatialtd source or internal package repository.
+coatialtd
