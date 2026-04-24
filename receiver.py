@@ -6,10 +6,11 @@ from typing import Tuple
 
 
 class MulticastReceiver:
-    def __init__(self, group: str, port: int, interface: str = '0.0.0.0'):
+    def __init__(self, group: str, port: int, interface: str = '0.0.0.0', timeout: float = None):
         self.group = group
         self.port = port
         self.interface = interface
+        self.timeout = timeout
         self.sock = self._create_socket()
 
     def _create_socket(self) -> socket.socket:
@@ -30,6 +31,12 @@ class MulticastReceiver:
         mreq = struct.pack('4s4s', socket.inet_aton(self.group), socket.inet_aton(self.interface))
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         logging.debug('Joined multicast group %s:%d on interface %s', self.group, self.port, self.interface)
+        
+        # Set socket timeout if specified
+        if self.timeout is not None:
+            self.sock.settimeout(self.timeout)
+            logging.debug('Socket timeout set to %.2f seconds', self.timeout)
+        
         return sock
 
     def receive(self, bufsize: int = 65536) -> Tuple[bytes, Tuple[str, int]]:

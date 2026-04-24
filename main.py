@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--dest-host', required=True, help='Destination unicast host')
     parser.add_argument('--dest-port', required=True, type=int, help='Destination unicast UDP port')
     parser.add_argument('--bind-interface', default='0.0.0.0', help='Local interface to bind for multicast receive')
+    parser.add_argument('--recv-timeout', type=float, default=None, help='Socket receive timeout in seconds')
     parser.add_argument('--keep-category', help='Comma-separated ASTERIX categories to keep; all others are dropped')
     parser.add_argument('--drop-category', help='Comma-separated ASTERIX categories to drop')
     parser.add_argument('--keep-ssrs-code', help='Comma-separated SSR-S codes to keep; all others are dropped when this option is set')
@@ -67,7 +68,7 @@ def main() -> int:
     redact_callsign_prefixes = [item.upper() for item in normalize_text_list(args.redact_callsign_prefix)]
     redact_ranges = [parse_offset_range(item) for item in args.redact_offset]
 
-    receiver = MulticastReceiver(args.mcast_group, args.mcast_port, args.bind_interface)
+    receiver = MulticastReceiver(args.mcast_group, args.mcast_port, args.bind_interface, args.recv_timeout)
     sender = UnicastSender(args.dest_host, args.dest_port)
 
     logging.info('Multicast receiver listening on %s:%d', args.mcast_group, args.mcast_port)
