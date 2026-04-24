@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import struct
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -10,7 +11,114 @@ except ImportError:
     CoatialtdAsterixDecoder = None
 
 
-@dataclass
+# =============================================================================
+# Field Parser Architecture
+# =============================================================================
+
+class FieldParser(ABC):
+    """Base class for ASTERIX field parsers."""
+    
+    def __init__(self, field_id: int, name: str):
+        self.field_id = field_id
+        self.name = name
+    
+    @abstractmethod
+    def parse(self, data: bytes, offset: int, remaining_length: int) -> Tuple[bytes, int]:
+        """
+        Parse field from packet data.
+        
+        Args:
+            data: Full packet bytes
+            offset: Current position in packet
+            remaining_length: Bytes remaining in packet
+            
+        Returns:
+            Tuple of (field_value, bytes_consumed)
+        """
+        pass
+    
+    def get_fixed_length(self) -> Optional[int]:
+        """Return fixed length if known, None for variable-length fields."""
+        return None
+
+
+class FixedLengthParser(FieldParser):
+    """Parser for fixed-length fields."""
+    
+    def __init__(self, field_id: int, name: str, length: int):
+        super().__init__(field_id, name)
+        self.length = length
+    
+    def parse(self, data: bytes, offset: int, remaining_length: int) -> Tuple[bytes, int]:
+        length = min(self.length, remaining_length)
+        return data[offset:offset + length], length
+    
+    def get_fixed_length(self) -> Optional[int]:
+        return self.length
+
+
+class VariableLengthParser(FieldParser):
+    """Parser for variable-length fields (length determined at runtime)."""
+    
+    def __init__(self, field_id: int, name: str, length_calculator: callable = None):
+        super().__init__(field_id, name)
+        self.length_calculator = length_calculator
+    
+    def parse(self, data: bytes, offset: int, remaining_length: int) -> Tuple[bytes, int]:
+        if self.length_calculator:
+            length = self.length_calculator(data, offset, remaining_length)
+        else:
+            # Default: consume all remaining
+            length = remaining_length
+        return data[offset:offset + length], length
+
+
+class RepetitiveParser(FieldParser):
+    """Parser for repetitive fields (FXP/REP format)."""
+    
+    def __init__(self, field_id: int, name: str, item_parser: FieldParser):
+        super().__init__(field_id, name)
+        self.item_parser = item_parser
+    
+    def parse(self, data: bytes, offset: int, remaining_length: int) -> Tuple[bytes, int]:
+        if remaining_length < 1:
+            return b'', 0
+        count = data[offset]
+        offset += 1
+        total_consumed = 1
+        items = []
+        for _ in range(count):
+            item_data, consumed = self.item_parser.parse(data, offset, remaining_length - total_consumed)
+            if consumed == 0:
+                break
+            items.append(item_data)
+            offset += consumed
+            total_consumed += consumed
+        return bytes([count]) + b''.join(items), total_consumed
+
+
+class FXExtensionParser(FieldParser):
+    """Parser for FX-extended fields."""
+    
+    def __init__(self, field_id: int, name: str, primary: FieldParser, extension: FieldParser):
+        super().__init__(field_id, name)
+        self.primary = primary
+        self.extension = extension
+    
+    def parse(self, data: bytes, offset: int, remaining_length: int) -> Tuple[bytes, int]:
+        primary_value, primary_consumed = self.primary.parse(data, offset, remaining_length)
+        total = primary_consumed
+        # Check if FX bit is set in last byte of primary
+        if primary_value and (primary_value[-1] & 0x01):
+            ext_value, ext_consumed = self.extension.parse(data, offset + total, remaining_length - total)
+            primary_value += ext_value
+            total += ext_consumed
+        return primary_value, total
+
+
+# =============================================================================
+# Decoded Data Classes
+# =============================================================================
 class DecodedField:
     id: int
     name: str
@@ -139,7 +247,63 @@ FIELD_DEFINITIONS: Dict[int, List[Tuple[int, str, Optional[int]]]] = {
 }
 
 
-def _resolve_attribute(source: Any, names: List[str], default: Any = None) -> Any:
+# =============================================================================
+# Parser Registry (New Architecture)
+# =============================================================================
+
+class CategoryParser:
+    """Parser registry for a specific ASTERIX category."""
+    
+    def __init__(self, category: int):
+        self.category = category
+        self.field_parsers: Dict[int, FieldParser] = {}
+    
+    def register(self, field_id: int, parser: FieldParser) -> None:
+        self.field_parsers[field_id] = parser
+    
+    def get(self, field_id: int) -> Optional[FieldParser]:
+        return self.field_parsers.get(field_id)
+    
+    def parse_field(self, field_id: int, data: bytes, offset: int, remaining: int) -> Optional[Tuple[bytes, int]]:
+        parser = self.get(field_id)
+        if parser:
+            return parser.parse(data, offset, remaining)
+        return None
+
+
+# Example: Category 21 with variable-length support
+def create_category21_parser() -> CategoryParser:
+    parser = CategoryParser(21)
+    # Fixed-length fields
+    parser.register(1, FixedLengthParser(1, 'DataSourceIdentifier', 2))
+    parser.register(2, FixedLengthParser(2, 'TimeOfDay', 3))
+    parser.register(3, FixedLengthParser(3, 'TargetReportDescriptor', 2))
+    parser.register(5, FixedLengthParser(5, 'PositionInWGS84', 6))
+    parser.register(6, FixedLengthParser(6, 'CalculatedTrackVelocity', 4))
+    parser.register(7, FixedLengthParser(7, 'TrackNumber', 2))
+    parser.register(8, FixedLengthParser(8, 'TrackStatus', 1))
+    parser.register(9, FixedLengthParser(9, 'Mode3ACodeInOctal', 2))
+    parser.register(10, FixedLengthParser(10, 'TargetAddress', 3))
+    # Variable-length: Aircraft Identification (up to 8 chars)
+    parser.register(15, VariableLengthParser(15, 'AircraftIdentification'))
+    return parser
+
+
+# Parser registry for all categories
+PARSER_REGISTRY: Dict[int, CategoryParser] = {
+    21: create_category21_parser(),
+    # Add more categories as needed
+}
+
+
+def get_category_parser(category: int) -> Optional[CategoryParser]:
+    """Get parser for a specific category."""
+    return PARSER_REGISTRY.get(category)
+
+
+# =============================================================================
+# Legacy Support Functions
+# =============================================================================
     for name in names:
         if hasattr(source, name):
             return getattr(source, name)
