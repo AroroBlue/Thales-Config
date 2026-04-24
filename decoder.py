@@ -248,6 +248,102 @@ FIELD_DEFINITIONS: Dict[int, List[Tuple[int, str, Optional[int]]]] = {
 
 
 # =============================================================================
+# Parser Function Registry (scalable architecture)
+# =============================================================================
+
+def _parse_fixed(packet: bytes, offset: int, length: int) -> Tuple[bytes, int]:
+    """Parse fixed-length field."""
+    return packet[offset:offset + length], length
+
+
+def _parse_target_address(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 3-byte target address."""
+    return _parse_fixed(packet, offset, 3)
+
+
+def _parse_track_number(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 2-byte track number."""
+    return _parse_fixed(packet, offset, 2)
+
+
+def _parse_position_wgs84(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 6-byte WGS84 position."""
+    return _parse_fixed(packet, offset, 6)
+
+
+def _parse_time_of_day(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 3-byte time of day."""
+    return _parse_fixed(packet, offset, 3)
+
+
+def _parse_flight_level(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 2-byte flight level."""
+    return _parse_fixed(packet, offset, 2)
+
+
+def _parse_mode3a(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 2-byte Mode 3/A code."""
+    return _parse_fixed(packet, offset, 2)
+
+
+def _parse_callsign(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse variable-length aircraft identification (up to 8 chars)."""
+    max_len = min(8, remaining)
+    end = offset
+    while end < offset + max_len and packet[end] != 0:
+        end += 1
+    return packet[offset:end], end - offset
+
+
+def _parse_data_source_id(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 2-byte data source identifier."""
+    return _parse_fixed(packet, offset, 2)
+
+
+def _parse_track_status(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 1-byte track status."""
+    return _parse_fixed(packet, offset, 1)
+
+
+def _parse_velocity(packet: bytes, offset: int, remaining: int) -> Tuple[bytes, int]:
+    """Parse 4-byte velocity (ground/calculated)."""
+    return _parse_fixed(packet, offset, 4)
+
+
+# Parser registry: (field_id -> parser_function)
+FIELD_PARSERS: Dict[int, Dict[int, callable]] = {
+    21: {
+        1: _parse_data_source_id,
+        2: _parse_time_of_day,
+        3: _parse_fixed,  # TargetReportDescriptor (2)
+        5: _parse_position_wgs84,
+        6: _parse_velocity,  # CalculatedTrackVelocity (4)
+        7: _parse_track_number,
+        8: _parse_track_status,
+        9: _parse_mode3a,
+        10: _parse_target_address,
+        15: _parse_callsign,  # Variable-length
+    },
+    48: {
+        1: _parse_data_source_id,
+        2: _parse_fixed,  # TargetReportDescriptor (2)
+        3: _parse_time_of_day,
+        4: _parse_position_wgs84,
+        5: _parse_mode3a,
+        6: _parse_target_address,
+        7: _parse_flight_level,
+        8: _parse_fixed,  # MeasuredHeight (2)
+        9: _parse_velocity,
+    },
+}
+
+
+def get_field_parser(category: int, field_id: int) -> Optional[callable]:
+    """Get parser function for a specific category and field."""
+    return FIELD_PARSERS.get(category, {}).get(field_id)
+
+
+# =============================================================================
 # Parser Registry (New Architecture)
 # =============================================================================
 
